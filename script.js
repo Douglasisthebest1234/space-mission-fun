@@ -2693,7 +2693,9 @@ function drawMap() {
 
   // Zoom out far enough to see the body, the rocket and (most of) its path.
   // Around the planet, a path heading out toward the Moon zooms right out to show it.
-  const apoRadius = orbit.escaping ? rocketRadius * 2 : orbit.apoapsis + body.radius;
+  // (standing still or going straight up and down there's no real orbit, so just use where you are)
+  let apoRadius = orbit.escaping ? rocketRadius * 2 : orbit.apoapsis + body.radius;
+  if (!isFinite(apoRadius)) apoRadius = rocketRadius;
   let viewRadius = Math.max(body.radius * 1.35, Math.min(apoRadius, body.radius * (onMoon ? 10 : 6)) * 1.1, rocketRadius * 1.1);
   if (!onMoon && (apoRadius > 2100000 || rocketRadius > 2100000)) viewRadius = MOON.orbitRadius + MOON.soi;
   const scale = (Math.min(width, height) * 0.45) / viewRadius;
