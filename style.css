@@ -1177,3 +1177,86 @@ body {
 .launch-scene.paused .astronaut {
   filter: brightness(0.6) saturate(0.7);
 }
+
+/* ---------- Space station ---------- */
+.station {
+  position: absolute;
+  width: 440px;
+  height: 160px;
+  transform-origin: center;
+  pointer-events: none;
+}
+
+.station svg {
+  display: block;
+}
+
+.station-light {
+  animation: station-blink 1.2s steps(1) infinite;
+}
+
+@keyframes station-blink {
+  50% { opacity: 0.15; }
+}
+
+/* Arrow at the edge of the screen pointing toward the station */
+.target-marker {
+  position: absolute;
+  z-index: 2;
+  transform: translate(-50%, -50%);
+  padding: 4px 10px;
+  border: 1px solid rgba(126, 231, 135, 0.6);
+  border-radius: 999px;
+  background: rgba(5, 10, 20, 0.75);
+  color: #7ee787;
+  font-family: "Exo 2", Arial, sans-serif;
+  font-size: 13px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.target-arrow {
+  display: inline-block;
+}
+
+/* Side parts (side chutes, landing legs) next to a part on the rocket */
+.side-part {
+  display: inline-block;
+  line-height: 0;
+}
+
+/* ---------- Rover ---------- */
+.rover {
+  position: absolute;
+  width: 54px;
+  height: 38px;
+  transform-origin: center;
+  pointer-events: none;
+  filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.6));
+}
+
+.rover svg {
+  display: block;
+  overflow: visible;
+}
+
+.rover-wheel {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.rover.driving .rover-wheel {
+  animation: rover-wheel-spin 0.6s linear infinite;
+}
+
+.rover.driving.reverse .rover-wheel {
+  animation-direction: reverse;
+}
+
+.rover-light {
+  animation: station-blink 1.4s steps(1) infinite;
+}
+
+@keyframes rover-wheel-spin {
+  to { transform: rotate(360deg); }
+}

@@ -225,6 +225,7 @@ const parts = [
   { id: "probe", type: "pod", name: "Probe Core", crew: 0, mass: 0.1, cost: 300, size: 0.8, startsUnlocked: true },
   { id: "solo", type: "pod", name: "Solo Pod", crew: 1, mass: 0.8, cost: 600, size: 0.8, startsUnlocked: true },
   { id: "duo", type: "pod", name: "Duo Pod", crew: 2, mass: 1.6, cost: 1200, size: 1.0, startsUnlocked: false },
+  { id: "lander", type: "pod", name: "Lander Cabin", crew: 2, mass: 1.0, cost: 900, size: 1.0, lander: true, startsUnlocked: false },
   { id: "trio", type: "pod", name: "Trio Pod", crew: 3, mass: 2.6, cost: 2000, size: 1.3, startsUnlocked: false },
 
   // Engines: "isp" is fuel efficiency (higher = burns fuel more slowly for the same thrust).
@@ -241,6 +242,17 @@ const parts = [
   { id: "tank-m", type: "tank", name: "Medium Tank", fuel: 250, mass: 1.4, cost: 350, size: 1.0, height: 70, startsUnlocked: true },
   { id: "tank-l", type: "tank", name: "Large Tank", fuel: 500, mass: 2.8, cost: 700, size: 1.0, height: 110, startsUnlocked: false },
 
+  // Landing gear: legs clip onto the sides of a part (like side chutes) and make
+  // landings much safer; the radar tells you when to start your landing burn
+  { id: "legs", type: "legs", mount: "side", name: "Landing Legs", mass: 0.2, cost: 300, size: 1.0, startsUnlocked: false },
+  { id: "radar", type: "radar", name: "Landing Radar", mass: 0.05, cost: 250, size: 0.8, startsUnlocked: false },
+
+  // Rover: rides on the rocket, then drives off after you land (press V)
+  { id: "rover", type: "rover", name: "Rover", mass: 0.4, cost: 800, size: 1.0, startsUnlocked: false },
+
+  // Docking port: lets you dock with the space station
+  { id: "dock", type: "dock", name: "Docking Port", mass: 0.1, cost: 400, size: 0.8, startsUnlocked: false },
+
   // Science instruments: press E in flight to take a reading where you are.
   //   points = base science, multiplied by how interesting the biome is
   //   needs  = "any" (works anywhere), "air" (below 100 km), "ground" (only when landed)
@@ -252,6 +264,11 @@ const parts = [
 // How much science it costs to unlock each locked part (Science and Business modes)
 const scienceCosts = {
   thermometer: 5,
+  dock: 20,
+  legs: 10,
+  rover: 25,
+  radar: 15,
+  lander: 30,
   "nose-l": 10,
   barometer: 15,
   swept: 15,
@@ -275,6 +292,9 @@ const partCategories = [
   { type: "nose", title: "Nose Cones" },
   { type: "chute", title: "Parachutes" },
   { type: "shield", title: "Heat Shields" },
+  { type: "dock", title: "Docking" },
+  { type: "rover", title: "Rovers" },
+  { type: "legs", types: ["legs", "radar"], title: "Landing Gear" },
   { type: "decoupler", title: "Decouplers" },
   { type: "liquid", title: "Liquid Engines" },
   { type: "solid", title: "Solid Engines" },
@@ -322,6 +342,34 @@ const statCostBox = document.getElementById("statCostBox");
 let build = { mode: null, stack: [] };
 
 // Draws a part as an SVG. All parts share a 60-unit-wide drawing space.
+// The rover drawn from the side (wheels, body, solar panel, camera mast).
+// Drawn in a 54 × 36 box, moved to (x, y) and scaled.
+function roverShapes(x = 0, y = 0, scale = 1) {
+  return `
+    <g transform="translate(${x} ${y}) scale(${scale})">
+      <rect x="6" y="2" width="42" height="4" fill="#1d3f74" stroke="#5b8fd6" stroke-width="1" />
+      <line x1="40" y1="6" x2="40" y2="12" stroke="#9aa4b1" stroke-width="2" />
+      <line x1="12" y1="0" x2="12" y2="12" stroke="#cfd8dc" stroke-width="1.5" />
+      <circle class="rover-light" cx="12" cy="0" r="2" fill="#7ee787" />
+      <rect x="36" y="8" width="10" height="5" rx="1" fill="#59616b" />
+      <circle cx="44" cy="10.5" r="1.6" fill="#4fc3f7" />
+      <rect x="4" y="12" width="46" height="12" rx="3" fill="#eef1f5" />
+      <rect x="4" y="17" width="46" height="3" fill="#ff8c32" />
+      <rect x="40" y="12" width="10" height="12" rx="3" fill="#000" opacity="0.1" />
+      <path d="M10 24 L27 28 L44 24" stroke="#6b7380" stroke-width="2" fill="none" />
+      ${[10, 27, 44]
+        .map(
+          (cx) => `
+        <g class="rover-wheel">
+          <circle cx="${cx}" cy="29" r="6.5" fill="#2b3340" />
+          <circle cx="${cx}" cy="29" r="3" fill="#9aa4b1" />
+          <line x1="${cx}" y1="23" x2="${cx}" y2="35" stroke="#59616b" stroke-width="1.2" />
+        </g>`
+        )
+        .join("")}
+    </g>`;
+}
+
 function partSVG(part, scale = 1) {
   let viewHeight;
   let shapes;
@@ -375,6 +423,44 @@ function partSVG(part, scale = 1) {
       <path d="M9 2 L51 2 L51 5 Q30 17 9 5 Z" fill="#6b4a3a" />
       <path d="M38 2 L51 2 L51 5 Q44 10 38 11 Z" fill="#000" opacity="0.15" />
       <rect x="9" y="0" width="42" height="3" fill="#9aa4b1" />`;
+  } else if (part.type === "legs") {
+    // One leg (the other side is a mirror copy): a bracket at the top that
+    // clips onto the part, and a strut reaching down and out to a round foot.
+    // Only the top third sits beside the part; the rest hangs below it.
+    viewHeight = 90;
+    viewWidth = 30;
+    shapes = `
+      <rect x="20" y="4" width="10" height="22" rx="2" fill="#9aa4b1" />
+      <rect x="20" y="12" width="10" height="4" fill="#ff8c32" />
+      <path d="M24 22 L8 80" stroke="#6b7380" stroke-width="4" stroke-linecap="round" />
+      <path d="M26 24 L22 60 L10 76" stroke="#cfd6e0" stroke-width="2.5" fill="none" stroke-linecap="round" />
+      <ellipse cx="7" cy="84" rx="7" ry="3" fill="#cfd6e0" />
+      <rect x="4" y="80" width="6" height="4" fill="#9aa4b1" />`;
+  } else if (part.type === "radar") {
+    // Small box with a dish pointing down at the ground
+    viewHeight = 22;
+    shapes = `
+      <rect x="16" y="0" width="28" height="14" rx="2" fill="#59616b" />
+      <rect x="36" y="0" width="8" height="14" fill="#000" opacity="0.15" />
+      <circle cx="22" cy="7" r="2" fill="#7ee787" />
+      <path d="M22 14 L38 14 Q36 22 30 22 Q24 22 22 14 Z" fill="#dfe5eb" />
+      <line x1="30" y1="14" x2="30" y2="21" stroke="#6b7380" stroke-width="1.5" />`;
+  } else if (part.type === "rover") {
+    // The rover folded up for the ride: a white carrier ring holding it
+    viewHeight = 30;
+    shapes = `
+      <rect x="12" y="0" width="36" height="30" fill="#c9d1da" />
+      <rect x="38" y="0" width="10" height="30" fill="#000" opacity="0.12" />
+      ${roverShapes(14, 4, 0.6)}`;
+  } else if (part.type === "dock") {
+    // Short metal ring with a grey docking collar and an orange band
+    viewHeight = 18;
+    shapes = `
+      <rect x="20" y="0" width="20" height="5" rx="1.5" fill="#cfd6e0" />
+      <rect x="16" y="5" width="28" height="9" fill="#9aa4b1" />
+      <rect x="16" y="8" width="28" height="3" fill="#ff8c32" />
+      <rect x="12" y="14" width="36" height="4" fill="#6b7380" />
+      <rect x="36" y="5" width="8" height="9" fill="#000" opacity="0.15" />`;
   } else if (part.type === "decoupler") {
     // Thin dark ring with yellow and black hazard stripes
     viewHeight = 12;
@@ -429,6 +515,20 @@ function partSVG(part, scale = 1) {
       <rect x="14" y="70" width="32" height="6" fill="#ff5c35" />
       <rect x="38" y="6" width="8" height="84" fill="#000" opacity="0.12" />
       <path d="M20 90 L40 90 L48 110 L12 110 Z" fill="#4b525c" />`;
+  } else if (part.lander) {
+    // Lander cabin: wide boxy cabin with angled windows, gold foil and a dish
+    viewHeight = 46;
+    shapes = `
+      <line x1="44" y1="0" x2="44" y2="8" stroke="#cfd8dc" stroke-width="1.5" />
+      <path d="M38 2 Q44 6 50 2" stroke="#cfd8dc" stroke-width="1.5" fill="none" />
+      <path d="M16 8 L44 8 L52 18 L52 34 L8 34 L8 18 Z" fill="#dfe5eb" />
+      <path d="M40 8 L44 8 L52 18 L52 34 L44 34 Z" fill="#000" opacity="0.12" />
+      <path d="M14 14 L24 14 L24 24 L11 24 Z" fill="#4fc3f7" stroke="#6b7380" stroke-width="1.5" />
+      <path d="M28 14 L38 14 L41 24 L28 24 Z" fill="#4fc3f7" stroke="#6b7380" stroke-width="1.5" />
+      <rect x="8" y="34" width="44" height="12" fill="#d9a43a" />
+      <path d="M8 38 L52 38 M8 42 L52 42" stroke="#b8862a" stroke-width="1" />
+      <rect x="4" y="22" width="4" height="6" fill="#9aa4b1" />
+      <rect x="52" y="22" width="4" height="6" fill="#9aa4b1" />`;
   } else if (part.type === "pod" && part.crew === 0) {
     // Probe core: small box with an antenna and a status light
     viewHeight = 34;
@@ -570,7 +670,7 @@ function renderPartsList() {
     partsPanel.appendChild(list);
 
     parts
-      .filter((part) => part.type === category.type)
+      .filter((part) => (category.types || [category.type]).includes(part.type))
       .forEach((part) => {
         const unlocked = isUnlocked(part);
         const card = document.createElement("button");
@@ -582,7 +682,7 @@ function renderPartsList() {
         let note;
         if (part.type === "pod") {
           statLines = `Crew: ${part.crew}<br>Mass: ${part.mass.toFixed(1)} t`;
-          note = part.crew === 0 ? "Uncrewed: flies itself" : "Controls the rocket";
+          note = part.crew === 0 ? "Uncrewed: flies itself" : part.lander ? "Lander: steers 50% faster" : "Controls the rocket";
         } else if (part.type === "nose") {
           statLines = `Mass: ${part.mass.toFixed(1)} t`;
           note = "Reduces air drag";
@@ -595,6 +695,18 @@ function renderPartsList() {
         } else if (part.type === "decoupler") {
           statLines = `Mass: ${part.mass.toFixed(1)} t`;
           note = "Separates rocket stages";
+        } else if (part.type === "legs") {
+          statLines = `Safe landing: ${LEGS_SAFE_SPEED} m/s<br>Mass: ${part.mass.toFixed(1)} t`;
+          note = "Pair: clip onto the top part. Steadier landings";
+        } else if (part.type === "radar") {
+          statLines = `Mass: ${part.mass.toFixed(2)} t`;
+          note = "Tells you when to start your landing burn";
+        } else if (part.type === "rover") {
+          statLines = `Mass: ${part.mass.toFixed(1)} t`;
+          note = "Land, then press V to drive it off";
+        } else if (part.type === "dock") {
+          statLines = `Mass: ${part.mass.toFixed(1)} t`;
+          note = "Dock with the space station (put it on top)";
         } else if (part.type === "chute") {
           statLines = `Mass: ${part.mass.toFixed(1)} t`;
           note = part.mount === "side"
@@ -650,11 +762,11 @@ function addPart(part) {
     // Side parachutes attach to the top part of the rocket
     const top = build.stack[build.stack.length - 1];
     if (!top) {
-      showHintMessage("Add a part first: side parachutes attach to the top part.");
+      showHintMessage(`Add a part first: ${part.name} attach to the top part.`);
       return;
     }
     if (top.side) {
-      showHintMessage("The top part already has side parachutes.");
+      showHintMessage(`The top part already has ${top.side.name} on its sides.`);
       return;
     }
     top.side = part;
@@ -692,8 +804,15 @@ function updateHint() {
 
 // Builds one row of the launch-pad rocket: [left chute] part [right chute].
 // Engines also get a flame underneath that shows while they are burning.
+// Landing legs hang down below the part they clip onto (by two thirds of their height)
+function sideStyle(part) {
+  if (part.type !== "legs") return "";
+  const height = Math.round(90 * part.size * 1.2);
+  return `align-self:flex-end;margin-bottom:-${Math.round((height * 2) / 3)}px`;
+}
+
 function stackRowHTML(entry, index) {
-  const sideSVG = entry.side ? partSVG(entry.side, 1.2) : "";
+  const sideSVG = entry.side ? `<span class="side-part" style="${sideStyle(entry.side)}">${partSVG(entry.side, 1.2)}</span>` : "";
   let flame = "";
   if (entry.part.type === "liquid" || entry.part.type === "solid") {
     const partWidth = 60 * entry.part.size * 1.2;
@@ -702,7 +821,7 @@ function stackRowHTML(entry, index) {
   }
   return `
     <div class="stack-item" data-index="${index}">
-      ${sideSVG}${partSVG(entry.part, 1.2)}${sideSVG ? `<span class="mirror">${sideSVG}</span>` : ""}
+      ${sideSVG}${partSVG(entry.part, 1.2)}${sideSVG ? sideSVG.replace('class="side-part"', 'class="side-part mirror"') : ""}
       ${flame}
     </div>`;
 }
@@ -720,6 +839,7 @@ function renderRocket() {
       button.className = "placed-part " + extraClass;
       button.title = `${part.name} (click to remove)`;
       button.innerHTML = partSVG(part, 1.2);
+      if (part.mount === "side") button.style.cssText = sideStyle(part);
       button.addEventListener("click", onClick);
       return button;
     };
@@ -793,6 +913,8 @@ const launchCanvas = document.getElementById("launchCanvas");
 const flightHud = document.getElementById("flightHud");
 const flightMessage = document.getElementById("flightMessage");
 const explosion = document.getElementById("explosion");
+const stationEl = document.getElementById("station");
+const targetMarker = document.getElementById("targetMarker");
 
 // Camera settings, worked out in layoutLaunchScene
 const camera = {
@@ -835,6 +957,38 @@ function placeOnScreen(element, x, y, angle) {
   element.style.transform = `translate(-50%, -50%) rotate(${angle}rad) scale(${camera.zoom})`;
 }
 
+// Draws the space station when it's close, and an arrow toward it when it's off screen
+function updateStationView() {
+  const show = flight.body === PLANET && flight.leftGround;
+  const info = show ? stationInfo() : null;
+  if (!info || info.distance > 50000) {
+    stationEl.hidden = true;
+    targetMarker.hidden = true;
+    return;
+  }
+  const local = localView(info.st, PLANET);
+  const point = toScreen(local.x, local.y);
+  const halfSize = 230 * camera.zoom; // about half the station's width on screen
+  const onScreen =
+    point.x > -halfSize && point.x < camera.width + halfSize && point.y > -halfSize && point.y < camera.height + halfSize;
+
+  stationEl.hidden = !onScreen;
+  if (onScreen) placeOnScreen(stationEl, local.x, local.y, local.angle);
+
+  const centreVisible = point.x > 0 && point.x < camera.width && point.y > 0 && point.y < camera.height;
+  targetMarker.hidden = centreVisible;
+  if (!centreVisible) {
+    // Pin the marker to the edge of the screen, pointing toward the station
+    const cx = camera.width / 2;
+    const cy = camera.height / 2;
+    const angle = Math.atan2(point.y - cy, point.x - cx);
+    const reach = Math.min((cx - 70) / Math.abs(Math.cos(angle) || 1e-9), (cy - 50) / Math.abs(Math.sin(angle) || 1e-9));
+    targetMarker.style.left = cx + Math.cos(angle) * reach + "px";
+    targetMarker.style.top = cy + Math.sin(angle) * reach + "px";
+    targetMarker.innerHTML = `<span class="target-arrow" style="transform: rotate(${angle}rad)">➤</span> 🛰️ ${formatDistance(info.distance)}`;
+  }
+}
+
 // Moves the camera to follow the rocket, then redraws the world and the rocket
 function updateLaunchView() {
   const { width, height, zoom, padScreenY } = camera;
@@ -842,9 +996,12 @@ function updateLaunchView() {
   // Follow the rocket sideways, and upward once it climbs past ~65% of the screen
   // (or the astronaut, when they're out walking)
   const eva = flight.eva;
-  const focusX = eva ? eva.x : flight.x;
-  const extent = eva ? EVA_HEIGHT / 2 : halfExtent(flight.width, flight.height, flight.angle);
-  const bottomWorldY = -((eva ? eva.y + EVA_HEIGHT / 2 : flight.y) - extent) * PIXELS_PER_METER;
+  const rover = flight.driving ? flight.rover : null;
+  const walker = eva || rover; // the astronaut or the rover, when you're controlling one
+  const walkerHeight = eva ? EVA_HEIGHT : ROVER_HEIGHT;
+  const focusX = walker ? walker.x : flight.x;
+  const extent = walker ? walkerHeight / 2 : halfExtent(flight.width, flight.height, flight.angle);
+  const bottomWorldY = -((walker ? walker.y + walkerHeight / 2 : flight.y) - extent) * PIXELS_PER_METER;
   const groundWorldY = -groundHeightAt(focusX) * PIXELS_PER_METER;
   const followY = Math.min(padScreenY, Math.max(height * 0.65, extent * 2 * PIXELS_PER_METER * zoom + 40));
   camera.x = focusX * PIXELS_PER_METER;
@@ -852,6 +1009,8 @@ function updateLaunchView() {
 
   placeOnScreen(launchRocket, flight.x, flight.y, flight.angle);
   if (eva) placeAstronaut();
+  placeRover();
+  updateStationView();
   flight.debris.forEach((piece) => {
     const local = localView(piece);
     placeOnScreen(piece.el, local.x, local.y, local.angle);
@@ -907,6 +1066,9 @@ const GM = GRAVITY * PLANET_RADIUS ** 2; // planet's gravity strength
 const SPACE_ALTITUDE = 100000; // metres: the edge of space
 const SOFT_LANDING_SPEED = 8; // m/s: gentle touchdown
 const SAFE_LANDING_SPEED = 20; // m/s: anything faster is a crash
+const LEGS_SOFT_SPEED = 12; // with landing legs attached
+const LEGS_SAFE_SPEED = 30;
+const LEGS_TIP_ANGLE = 60; // degrees: legs keep it upright even when landing this tilted (35° without)
 const STEER_RATE = (60 * Math.PI) / 180; // A/D turn the rocket 60° per second
 const BODY_DRAG_AREA = 0.2; // m²: the rocket body's own air resistance
 // Reentry heating: going fast through air heats the rocket (heat ∝ √air density × speed³).
@@ -1064,6 +1226,134 @@ function orbitInfo(px, py, vx, vy, body = PLANET) {
   };
 }
 
+// ---------- The space station ----------
+// Horizon Station circles the planet 150 km up, a bit higher than a normal orbit.
+// Being lower makes you go round faster, so you slowly catch up with it.
+const STATION = {
+  name: "Horizon Station",
+  radius: PLANET_RADIUS + 150000,
+  startAngle: -0.78, // radians around the planet when you launch
+  halfHeight: 8, // metres: how far the docking port is below its middle
+};
+STATION.speed = Math.sqrt(GM / STATION.radius ** 3); // radians per second
+const DOCK_RANGE = 80; // metres
+const DOCK_SPEED = 5; // m/s
+const STATION_POINTS = 50;
+
+function stationState(time = flight.time) {
+  const a = STATION.startAngle + STATION.speed * time;
+  const r = STATION.radius;
+  return {
+    px: r * Math.sin(a),
+    py: r * Math.cos(a),
+    vx: r * STATION.speed * Math.cos(a),
+    vy: -r * STATION.speed * Math.sin(a),
+    heading: a, // kept level with the ground below it
+  };
+}
+
+// Where the station is compared with the rocket: distance, and how fast you're closing in
+function stationInfo() {
+  const st = stationState();
+  const dx = st.px - flight.px;
+  const dy = st.py - flight.py;
+  const dvx = flight.vx - st.vx; // your speed compared with the station
+  const dvy = flight.vy - st.vy;
+  const distance = Math.hypot(dx, dy);
+  return {
+    st,
+    dx,
+    dy,
+    dvx,
+    dvy,
+    distance,
+    relSpeed: Math.hypot(dvx, dvy),
+    closing: distance > 0 ? (dx * dvx + dy * dvy) / distance : 0, // + = getting closer
+  };
+}
+
+// Close enough that P / R / T steer compared with the station?
+function targetingStation() {
+  return flight.body === PLANET && flight.leftGround && stationInfo().distance < 50000;
+}
+
+// How far ahead the station is around the planet (0–360°), and the best angle
+// to start the transfer burn from the orbit you're in now
+function stationAhead() {
+  const st = stationState();
+  const diff = Math.atan2(st.px, st.py) - Math.atan2(flight.px, flight.py);
+  const ahead = Math.round((((diff * 180) / Math.PI) % 360 + 360) % 360);
+  const r1 = Math.hypot(flight.px, flight.py);
+  const transferTime = Math.PI * Math.sqrt(((r1 + STATION.radius) / 2) ** 3 / GM);
+  const burnAt = Math.round(180 - (STATION.speed * transferTime * 180) / Math.PI);
+  return { ahead, burnAt: ((burnAt % 360) + 360) % 360 };
+}
+
+function hasDockingPort() {
+  return build.stack.some((entry, index) => isAttached(index) && entry.part.type === "dock");
+}
+
+// Holds a docked rocket just under the station's docking port
+function holdAtStation() {
+  const st = stationState();
+  const r = Math.hypot(st.px, st.py);
+  const gap = STATION.halfHeight + flight.height / 2;
+  flight.px = st.px - (st.px / r) * gap;
+  flight.py = st.py - (st.py / r) * gap;
+  flight.vx = st.vx;
+  flight.vy = st.vy;
+  flight.heading = st.heading;
+}
+
+function checkDocking() {
+  if (flight.docked || flight.body !== PLANET || !flight.leftGround) return;
+  const info = stationInfo();
+  if (info.distance > DOCK_RANGE) {
+    flight.warnedNoDock = false;
+    return;
+  }
+  if (!hasDockingPort()) {
+    if (!flight.warnedNoDock) flashMessage("You need a Docking Port to dock with the station", 3000);
+    flight.warnedNoDock = true;
+    return;
+  }
+  if (info.relSpeed > DOCK_SPEED) return; // too fast: slow down to dock
+
+  flight.docked = true;
+  flight.visitedStation = true;
+  flight.engines.forEach((e) => {
+    if (e.part.type === "liquid" && e.ignited) e.shutOff = true;
+  });
+  holdAtStation();
+  updateLocal();
+
+  // The station fills your tanks and sends your science home by radio
+  flight.sections.forEach((section, s) => {
+    if (s >= firstAttachedSection()) section.liquidFuel = section.liquidFuelMax;
+  });
+  let sent = "";
+  if (career) {
+    recordScience({ key: "station", kind: "experiment", label: "Station Visit", points: STATION_POINTS });
+    const points = flight.onboard.reduce((sum, item) => sum + item.points, 0);
+    if (points) {
+      bankScience(flight.onboard);
+      flight.onboard = [];
+      sent = `\n📡 ${points} science radioed home`;
+    }
+  }
+  flashMessage(`🔗 Docked with ${STATION.name}!\n⛽ Tanks refilled${sent}`, 5000);
+  checkQuest();
+}
+
+function undock() {
+  flight.docked = false;
+  // Push gently away (downward, away from the station)
+  const r = Math.hypot(flight.px, flight.py);
+  flight.vx -= (flight.px / r) * 1;
+  flight.vy -= (flight.py / r) * 1;
+  flashMessage("Undocked. SPACE turns your engines back on");
+}
+
 // The rocket's current path around whichever body it's near
 function currentOrbit(f = flight) {
   const rel = relativeState(f, f.body);
@@ -1091,7 +1381,7 @@ let flightFrameId = null;
 let lastFrameTime = 0;
 
 // Which steering keys are held down
-const steering = { left: false, right: false, prograde: false, retrograde: false, jump: false };
+const steering = { left: false, right: false, prograde: false, retrograde: false, target: false, jump: false };
 
 // Speed-up button: each click moves to the next speed, then back to 1x
 const WARP_SPEEDS = [1, 2, 4, 10, 50, 100, 1000, 10000];
@@ -1123,11 +1413,15 @@ function enginesRunning() {
 // Is the rocket somewhere that needs small, careful physics steps?
 function needsCarefulSteps() {
   const inAir = flight.body === PLANET && flight.altitude < SPACE_ALTITUDE;
-  return enginesRunning() || inAir || flight.altitude < 20000;
+  const nearStation = !flight.docked && flight.body === PLANET && stationInfo().distance < 3000;
+  return enginesRunning() || inAir || flight.altitude < 20000 || nearStation;
 }
 
 // The really big speed-ups only work while coasting high above everything
+const ROVER_MAX_WARP = 50;
+
 function effectiveWarp() {
+  if (flight.driving) return Math.min(timeWarp, ROVER_MAX_WARP);
   if (flight.state !== "flying") return timeWarp;
   return needsCarefulSteps() ? Math.min(timeWarp, SAFE_WARP) : timeWarp;
 }
@@ -1155,7 +1449,7 @@ function setPaused(value) {
   pauseButton.textContent = paused ? "▶ Resume" : "⏸ Pause";
   pauseButton.classList.toggle("active", paused);
   launchScene.classList.toggle("paused", paused);
-  steering.left = steering.right = steering.prograde = steering.retrograde = steering.jump = false;
+  steering.left = steering.right = steering.prograde = steering.retrograde = steering.target = steering.jump = false;
   if (flight) renderFlightHud();
 }
 
@@ -1190,11 +1484,15 @@ function isOnSurface() {
   return !flight.leftGround || (flight.state === "ended" && flight.result !== "crashed");
 }
 
+// The biome on the ground at x metres along the surface of the body you're on
+function groundBiomeAt(x) {
+  if (flight.body === MOON) return moonBiome(x);
+  return surfaceAt(x * PIXELS_PER_METER).water ? "ocean" : surfaceBiome(x * PIXELS_PER_METER);
+}
+
 function currentBiome() {
-  if (flight.eva) {
-    if (flight.body === MOON) return moonBiome(flight.eva.x);
-    return surfaceAt(flight.eva.x * PIXELS_PER_METER).water ? "ocean" : surfaceBiome(flight.eva.x * PIXELS_PER_METER);
-  }
+  if (flight.eva) return groundBiomeAt(flight.eva.x);
+  if (flight.driving) return groundBiomeAt(flight.rover.x);
   if (flight.body === MOON) return isOnSurface() ? moonBiome(flight.x) : "nearMoon";
   if (isOnSurface()) return surfaceBiome(flight.x * PIXELS_PER_METER);
   if (flight.altitude < 12000) return "lowerAir";
@@ -1316,7 +1614,9 @@ function resetFlight() {
   launchRocket.querySelectorAll(".stack-item").forEach((row) => row.classList.remove("detached", "firing"));
   const oldCanopies = launchRocket.querySelector(".canopies");
   if (oldCanopies) oldCanopies.remove();
-  launchScene.querySelectorAll(".debris, .astronaut").forEach((el) => el.remove());
+  launchScene.querySelectorAll(".debris, .astronaut, .rover").forEach((el) => el.remove());
+  stationEl.hidden = true;
+  targetMarker.hidden = true;
   explosion.hidden = true;
 
   camera.towerWidth = launchRocket.offsetWidth;
@@ -1383,8 +1683,13 @@ function resetFlight() {
     visitedMoon: false,
     landedOn: null,
     wasOnMoon: false, // has landed on the Moon at some point this flight
+    docked: false, // docked with the space station
+    visitedStation: false,
+    warnedNoDock: false,
     relaunched: false, // took off again after landing
     eva: null, // the astronaut, while they're outside the rocket
+    rover: null, // the rover, once it has driven off the rocket
+    driving: false, // are you controlling the rover right now?
     inMoonOrbit: false,
     // Planet coordinates (metres from the planet's centre) and velocity (m/s)
     px: 0,
@@ -1453,6 +1758,54 @@ function firstAttachedSection() {
   return flight.cutIndex < build.stack.length ? flight.sectionOf[flight.cutIndex] : Infinity;
 }
 
+function hasPart(test) {
+  return build.stack.some((entry, index) => isAttached(index) && (test(entry.part) || (entry.side && test(entry.side))));
+}
+
+function hasLegs() {
+  return hasPart((p) => p.type === "legs");
+}
+
+// The Lander Cabin has extra steering thrusters
+function steerRate() {
+  return hasPart((p) => p.lander) ? STEER_RATE * 1.5 : STEER_RATE;
+}
+
+// ---------- Landing radar ----------
+// Works out how high you are above the actual ground, and how soon you must
+// start burning to stop in time (with all your engines pushing backwards).
+function landingRadar() {
+  const f = flight;
+  if (f.state !== "flying" || !f.leftGround || !hasPart((p) => p.type === "radar")) return null;
+  const height = Math.max(0, f.altitude - groundHeightAt(f.x));
+  if (height > 50000) return null;
+
+  const rel = relativeState(f, f.body);
+  const speed = Math.hypot(rel.vx, rel.vy);
+  const down = -f.climbSpeed;
+  const r = Math.hypot(rel.px, rel.py);
+  const gravity = f.body.gm / (r * r);
+  let thrust = 0;
+  f.engines.forEach((e) => {
+    if (!isAttached(e.index) || !e.ignited) return;
+    if (e.part.type === "liquid" && f.sections[e.section].liquidFuel > 0) thrust += e.part.thrust;
+    if (e.part.type === "solid" && e.fuel > 0) thrust += e.part.thrust;
+  });
+  const push = thrust / rocketMass(); // m/s² the engines can give
+  const chutes = f.chutes.some((c) => c.deployed && isAttached(c.index));
+
+  let burnIn = null; // seconds until the landing burn must start
+  let tooWeak = false;
+  if (down > 1 && !chutes) {
+    if (push <= gravity * 1.05) tooWeak = true;
+    else {
+      const stopDistance = (speed * speed) / (2 * (push - gravity));
+      burnIn = (height - stopDistance * 1.1 - 40) / down;
+    }
+  }
+  return { height, speed, down, burnIn, tooWeak };
+}
+
 // A command pod (or probe core) is needed to steer
 function canSteer() {
   return build.stack.some((entry, index) => isAttached(index) && entry.part.type === "pod");
@@ -1463,6 +1816,7 @@ function rocketMass() {
   let kg = 0;
   build.stack.forEach((entry, index) => {
     if (!isAttached(index)) return;
+    if (flight.rover && flight.rover.index === index) return; // the rover has driven off
     [entry.part, entry.side].forEach((part) => {
       if (!part) return;
       kg += part.mass * 1000;
@@ -1508,6 +1862,11 @@ function pressSpace() {
     return;
   }
 
+  if (flight.docked) {
+    undock();
+    return;
+  }
+
   // Flying: while liquid engines still have fuel, Space switches them off and
   // back on again. The next stage only fires once their fuel is all gone.
   const live = flight.engines.filter((e) => e.ignited && isAttached(e.index));
@@ -1538,7 +1897,7 @@ function pressSpace() {
 // on board, and it still has an engine with fuel
 function canTakeOff() {
   const f = flight;
-  if (f.state !== "ended" || f.eva || f.onSide) return false;
+  if (f.state !== "ended" || f.eva || f.driving || f.onSide) return false;
   if (f.result !== "landed" && f.result !== "hardLanding") return false;
   return f.engines.some((e) => {
     if (!isAttached(e.index)) return false;
@@ -1674,23 +2033,30 @@ function flightFrame(now) {
 
   // A / D steering
   const turn = (steering.right ? 1 : 0) - (steering.left ? 1 : 0);
-  if (turn && flight.state === "flying") {
+  if (turn && flight.state === "flying" && !flight.docked) {
     if (!canSteer()) {
       if (!flight.warnedNoPod) flashMessage("No command pod: you can't steer!");
       flight.warnedNoPod = true;
     } else if (flight.leftGround) {
-      flight.heading += turn * STEER_RATE * realDt;
+      flight.heading += turn * steerRate() * realDt;
     }
   }
 
-  // P / R: turn to face prograde (the way you're moving) or retrograde (backwards)
-  const holdDirection = steering.prograde || steering.retrograde;
-  if (holdDirection && !turn && flight.state === "flying" && flight.leftGround && canSteer()) {
-    const rel = relativeState(flight, flight.body);
-    if (Math.hypot(rel.vx, rel.vy) > 0.5) {
-      const target = Math.atan2(rel.vx, rel.vy) + (steering.retrograde ? Math.PI : 0);
+  // P / R: turn to face prograde (the way you're moving) or retrograde (backwards).
+  // Close to the station they work compared with the station, and T points at it.
+  const holdDirection = steering.prograde || steering.retrograde || steering.target;
+  if (holdDirection && !turn && flight.state === "flying" && flight.leftGround && !flight.docked && canSteer()) {
+    let rel = relativeState(flight, flight.body);
+    const nearStation = targetingStation();
+    if (nearStation) {
+      const info = stationInfo();
+      rel = steering.target ? { vx: info.dx, vy: info.dy } : { vx: info.dvx, vy: info.dvy };
+    }
+    if (Math.hypot(rel.vx, rel.vy) > 0.5 && (nearStation || !steering.target)) {
+      const backwards = steering.retrograde && !steering.target;
+      const target = Math.atan2(rel.vx, rel.vy) + (backwards ? Math.PI : 0);
       const diff = normalizeAngle(target - flight.heading);
-      const most = STEER_RATE * realDt;
+      const most = steerRate() * realDt;
       flight.heading += Math.max(-most, Math.min(most, diff));
     }
   }
@@ -1717,9 +2083,16 @@ function flightFrame(now) {
   }
   flight.lastBody = flight.body;
 
+  const radar = landingRadar();
+  if (radar && radar.burnIn !== null && radar.burnIn < 15 && timeWarp > 1) {
+    setTimeWarp(1);
+    flashMessage("📡 Radar: slowing time for your landing", 2000);
+  }
+
   if (flight.state === "flying") {
     checkBiome();
     checkOrbit();
+    checkDocking();
     checkQuest();
   }
 
@@ -1752,6 +2125,13 @@ function flightFrame(now) {
 
 function stepFlight(dt) {
   flight.time += dt;
+  if (flight.docked) {
+    holdAtStation();
+    flight.engines.forEach((e) => (e.burning = false));
+    flight.heatRate = 0;
+    updateLocal();
+    return;
+  }
   let thrust = 0;
   flight.engines.forEach((e) => (e.burning = false));
 
@@ -1909,7 +2289,9 @@ function touchDown() {
   flight.inWater = flight.body === PLANET && surfaceAt(flight.x * PIXELS_PER_METER).water;
   flight.landedOn = flight.body.id;
 
-  if (impactSpeed > SAFE_LANDING_SPEED) {
+  const legs = hasLegs();
+  flight.landedOnLegs = legs;
+  if (impactSpeed > (legs ? LEGS_SAFE_SPEED : SAFE_LANDING_SPEED)) {
     if (flight.onboard.length) flight.lostScience = flight.onboard.reduce((s, item) => s + item.points, 0);
     endFlight("crashed", impactSpeed);
     return;
@@ -1920,7 +2302,7 @@ function touchDown() {
   const local = localView(flight);
   const degrees = (local.angle * 180) / Math.PI;
   let tilt = 0;
-  if (Math.abs(degrees) > 35) {
+  if (Math.abs(degrees) > (legs ? LEGS_TIP_ANGLE : 35)) {
     tilt = (Math.sign(degrees) * Math.PI) / 2;
     flight.onSide = true;
   }
@@ -1932,7 +2314,7 @@ function touchDown() {
   flight.py += local.up.y * lift;
   updateLocal();
 
-  endFlight(impactSpeed <= SOFT_LANDING_SPEED ? "landed" : "hardLanding", impactSpeed);
+  endFlight(impactSpeed <= (legs ? LEGS_SOFT_SPEED : SOFT_LANDING_SPEED) ? "landed" : "hardLanding", impactSpeed);
   if (flight.body === MOON) flight.wasOnMoon = true;
   // Switch off the liquid engines, ready to take off again later
   flight.engines.forEach((e) => {
@@ -1986,6 +2368,7 @@ function nearRocket() {
 }
 
 function toggleEva() {
+  if (flight.driving) return;
   if (flight.eva) {
     if (!nearRocket()) {
       flashMessage("Walk back to the rocket to get in");
@@ -2098,6 +2481,183 @@ function astronautSVG() {
     </svg>`;
 }
 
+// ---------- Rovers ----------
+// After a safe landing, V drives the rover off the rocket. A / D drive it over
+// the ground (it bounces over bumps, and flies off crater rims on the Moon!),
+// E does a science scan of the biome it's in, and V switches back to the rocket.
+// Speed-up (⏩, up to 50x) makes long drives quicker. The rover stays where you
+// leave it, even if the rocket takes off again.
+const ROVER_HEIGHT = 3.6; // metres (the drawing is 54 × 36 px)
+const ROVER_POINTS = 8; // × biome multiplier
+
+function roverOnBoard() {
+  return build.stack.findIndex((entry, index) => isAttached(index) && entry.part.type === "rover");
+}
+
+function canDriveRover() {
+  const f = flight;
+  if (f.state !== "ended" || f.eva || (f.result !== "landed" && f.result !== "hardLanding")) return false;
+  if (f.rover) return f.rover.body === f.body;
+  return roverOnBoard() >= 0;
+}
+
+function toggleRover() {
+  const f = flight;
+  if (f.driving) {
+    f.driving = false;
+    steering.left = steering.right = false;
+    cancelAnimationFrame(flightFrameId);
+    updateLaunchView();
+    renderFlightHud();
+    flashMessage("Back at the rocket");
+    return;
+  }
+  if (!canDriveRover()) {
+    if (f.state === "flying" && (f.rover || roverOnBoard() >= 0)) flashMessage("Land first, then press V to drive the rover");
+    else if (f.state === "ended" && f.eva) flashMessage("Climb back in first (F)");
+    else if (f.state === "ended" && !f.rover && roverOnBoard() < 0) flashMessage("No rover on board");
+    return;
+  }
+
+  if (!f.rover) deployRover();
+  f.driving = true;
+  steering.left = steering.right = false;
+  lastFrameTime = performance.now();
+  flightFrameId = requestAnimationFrame(roverFrame);
+  renderFlightHud();
+}
+
+// The rover leaves its spot on the rocket and rolls down beside it
+function deployRover() {
+  const f = flight;
+  const index = roverOnBoard();
+  const row = launchRocket.querySelector(`.stack-item[data-index="${index}"]`);
+
+  // Take it off the rocket, and let the rocket settle (it gets shorter)
+  const axis = { x: Math.sin(f.heading), y: Math.cos(f.heading) };
+  const bottom = { x: f.px - axis.x * (f.height / 2), y: f.py - axis.y * (f.height / 2) };
+  if (row) row.classList.add("detached");
+  f.height = launchRocket.offsetHeight / PIXELS_PER_METER;
+  f.width = launchRocket.offsetWidth / PIXELS_PER_METER;
+  f.px = bottom.x + axis.x * (f.height / 2);
+  f.py = bottom.y + axis.y * (f.height / 2);
+  updateLocal();
+
+  const el = document.createElement("div");
+  el.className = "rover";
+  el.innerHTML = `<svg viewBox="0 -2 54 38" width="54" height="38" aria-hidden="true">${roverShapes()}</svg>`;
+  launchScene.insertBefore(el, flightHud);
+  const reach = (f.onSide ? f.height : f.width) / 2 + 4;
+  const x = f.x + reach;
+  f.rover = { index, el, body: f.body, x, y: groundHeightAt(x), vy: 0, speed: 0, facing: 1, angle: 0, onGround: true, driven: 0 };
+  flashMessage(f.body === MOON ? "🚙 Rover down on the Moon! Drive with A / D" : "🚙 Rover deployed! Drive with A / D", 3000);
+}
+
+function roverFrame(now) {
+  const rv = flight && flight.driving ? flight.rover : null;
+  if (!rv) return;
+  if (paused) {
+    lastFrameTime = now;
+    flightFrameId = requestAnimationFrame(roverFrame);
+    return;
+  }
+  const dt = Math.min(0.05, (now - lastFrameTime) / 1000) * effectiveWarp();
+  lastFrameTime = now;
+
+  const onMoon = rv.body === MOON;
+  const gravity = rv.body.gm / rv.body.radius ** 2;
+  const maxSpeed = onMoon ? 8 : 12; // m/s
+  const grip = onMoon ? 2.5 : 5; // how quickly it speeds up and brakes (m/s²)
+  const drive = (steering.right ? 1 : 0) - (steering.left ? 1 : 0);
+  if (drive) rv.facing = drive;
+
+  // Small steps, so fast-forwarded drives still follow the ground
+  const steps = Math.max(1, Math.ceil(dt / 0.05));
+  const h = dt / steps;
+  let blocked = false;
+  for (let i = 0; i < steps; i++) {
+    const target = drive * maxSpeed;
+    const change = Math.max(-grip * h, Math.min(grip * h, target - rv.speed));
+    if (rv.onGround) rv.speed += change; // can only push or brake with wheels on the ground
+
+    const oldX = rv.x;
+    const oldGround = groundHeightAt(rv.x);
+    let newX = rv.x + rv.speed * h;
+    if (!onMoon && surfaceAt(newX * PIXELS_PER_METER).water) {
+      newX = rv.x; // rovers can't swim
+      rv.speed = 0;
+      blocked = true;
+    }
+    rv.x = newX;
+    rv.driven += Math.abs(rv.x - oldX);
+    const ground = groundHeightAt(rv.x);
+
+    if (rv.onGround) {
+      const followSpeed = (ground - oldGround) / h; // how fast the ground rises/falls under the wheels
+      if (ground < rv.y - 0.3 && followSpeed < -gravity * 0.6) {
+        // The ground drops away faster than it can fall: the rover flies!
+        rv.onGround = false;
+        rv.vy = rv.vyLast || 0;
+      } else {
+        rv.vyLast = followSpeed;
+        rv.y = ground;
+      }
+    }
+    if (!rv.onGround) {
+      rv.vy -= gravity * h;
+      rv.y += rv.vy * h;
+      if (rv.y <= ground) {
+        rv.y = ground;
+        rv.vy = 0;
+        rv.onGround = true;
+      }
+    }
+  }
+  if (blocked && !(flight.flash && performance.now() < flight.flash.until)) flashMessage("🌊 Rovers can't swim!");
+
+  // Tilt to match the slope under the wheels
+  const slope = (groundHeightAt(rv.x + 2) - groundHeightAt(rv.x - 2)) / 4;
+  const tilt = rv.onGround ? -Math.atan(slope) : rv.angle;
+  rv.angle += (tilt - rv.angle) * Math.min(1, 10 * Math.min(0.05, dt));
+
+  rv.el.classList.toggle("driving", Math.abs(rv.speed) > 0.3);
+  rv.el.classList.toggle("reverse", rv.speed * rv.facing < 0);
+  updateLaunchView();
+  renderFlightHud();
+  flightFrameId = requestAnimationFrame(roverFrame);
+}
+
+// Puts the rover on screen (when it's on the same planet or moon as the camera)
+function placeRover() {
+  const rv = flight.rover;
+  if (!rv) return;
+  rv.el.hidden = rv.body !== flight.body;
+  if (rv.el.hidden) return;
+  // Its middle sits half its height up from the ground, along the tilted "up"
+  const up = ROVER_HEIGHT / 2;
+  const point = toScreen(rv.x + Math.sin(rv.angle) * up, rv.y + Math.cos(rv.angle) * up);
+  rv.el.style.left = point.x + "px";
+  rv.el.style.top = point.y + "px";
+  rv.el.style.transform = `translate(-50%, -50%) rotate(${rv.angle}rad) scale(${camera.zoom * rv.facing}, ${camera.zoom})`;
+}
+
+// E while driving: scan the ground for science
+function roverScan() {
+  const biome = currentBiome();
+  const info = BIOMES[biome];
+  const key = `rover@${biome}`;
+  if (!flight.readings.includes(key)) flight.readings.push(key); // for quests
+  let text = `🚙 Rover scan: ${info.name}`;
+  if (career) {
+    const points = Math.round(ROVER_POINTS * info.multiplier);
+    text += recordScience({ key, kind: "experiment", label: `Rover scan (${info.name})`, points })
+      ? ` +${points} 🔬`
+      : " (already scanned here: drive somewhere new!)";
+  }
+  flashMessage(text, 3000);
+  checkQuest();
+}
+
 // ---------- Map view (M) ----------
 // Shows the whole planet from far away, with the path the rocket is coasting along
 function toggleMap() {
@@ -2156,6 +2716,19 @@ function drawMap() {
     ctx.beginPath();
     ctx.arc(cx, cy, (PLANET_RADIUS + SPACE_ALTITUDE) * scale, 0, Math.PI * 2);
     ctx.stroke();
+
+    // The space station's path and where it is now
+    ctx.strokeStyle = "rgba(126, 231, 135, 0.25)";
+    ctx.beginPath();
+    ctx.arc(cx, cy, STATION.radius * scale, 0, Math.PI * 2);
+    ctx.stroke();
+    const st = stationState();
+    const stPoint = toMap(st.px, st.py);
+    ctx.fillStyle = "#7ee787";
+    ctx.fillRect(stPoint.x - 3, stPoint.y - 3, 6, 6);
+    ctx.font = "12px 'Exo 2', Arial, sans-serif";
+    ctx.fillText("🛰️ Station", stPoint.x + 6, stPoint.y - 6);
+    ctx.setLineDash([4, 6]);
 
     // The Moon's path around the planet, the Moon, and the edge of its gravity
     ctx.strokeStyle = "rgba(200, 200, 210, 0.18)";
@@ -2326,6 +2899,34 @@ function renderFlightHud() {
       html += `<div class="hud-row"><span>Status</span><strong class="in-space">${f.body === MOON ? "Orbiting the Moon 🌙" : "In orbit 🛰️"}</strong></div>`;
     }
   }
+  // Landing radar
+  const radar = landingRadar();
+  if (radar) {
+    let burn = "—";
+    if (radar.tooWeak) burn = "engines too weak!";
+    else if (radar.burnIn !== null) burn = radar.burnIn <= 0 ? "🔥 NOW" : `in ${Math.ceil(radar.burnIn)} s`;
+    html += `
+      <div class="hud-title">📡 Landing Radar</div>
+      <div class="hud-row"><span>Height</span><strong>${formatDistance(radar.height)}</strong></div>
+      <div class="hud-row"><span>Landing burn</span><strong>${burn}</strong></div>`;
+  }
+
+  // The space station: where it is, and (up close) how fast you're closing in
+  if (f.leftGround && f.state === "flying" && f.body === PLANET && f.altitude >= SPACE_ALTITUDE) {
+    const info = stationInfo();
+    if (f.docked) {
+      html += `<div class="hud-row"><span>Station</span><strong class="in-space">🔗 Docked</strong></div>`;
+    } else if (info.distance < 50000) {
+      html += `
+        <div class="hud-title">🛰️ ${STATION.name}${info.distance < 50000 ? " (P / R / T aim at it)" : ""}</div>
+        <div class="hud-row"><span>Distance</span><strong>${formatDistance(info.distance)}</strong></div>
+        <div class="hud-row"><span>Rel. speed</span><strong>${info.relSpeed.toFixed(1)} m/s</strong></div>
+        <div class="hud-row"><span>Closing</span><strong>${info.closing >= 0 ? "▶◀ " : "◀▶ "}${Math.abs(info.closing).toFixed(1)} m/s</strong></div>`;
+    } else {
+      const { ahead, burnAt } = stationAhead();
+      html += `<div class="hud-row"><span>Station</span><strong>🛰️ ${ahead}° ahead (burn at ${burnAt}°)</strong></div>`;
+    }
+  }
   // Where the Moon is: for timing the trip there
   if (f.leftGround && f.body === PLANET && f.altitude >= SPACE_ALTITUDE) {
     html += `<div class="hud-row"><span>Moon</span><strong>🌙 ${moonAheadDegrees()}° ahead</strong></div>`;
@@ -2388,6 +2989,16 @@ function renderFlightHud() {
     if (engine.part.type === "solid") html += fuelBar(engine.fuel, engine.part.solidFuel);
   });
 
+  if (f.driving) {
+    const rv = f.rover;
+    const gap = Math.abs(rv.x - f.x);
+    html =
+      `<div class="hud-title">🚙 Driving the rover</div>
+      <div class="hud-row"><span>Speed</span><strong>${Math.abs(rv.speed).toFixed(1)} m/s</strong></div>
+      <div class="hud-row"><span>Biome</span><strong>${BIOMES[currentBiome()].name}</strong></div>
+      <div class="hud-row"><span>Driven</span><strong>${formatDistance(rv.driven)}</strong></div>
+      <div class="hud-row"><span>To rocket</span><strong>${formatDistance(gap)} ${rv.x > f.x ? "◀" : "▶"}</strong></div>` + html;
+  }
   if (f.eva) {
     const gap = Math.abs(f.eva.x - f.x);
     html =
@@ -2405,6 +3016,9 @@ function renderFlightHud() {
 function currentMessage() {
   const f = flight;
   if (paused) return "⏸ Paused\nPress Esc or ▶ Resume to carry on";
+  if (f.driving && !(f.flash && performance.now() < f.flash.until)) {
+    return "A / D drive · E science scan · ⏩ drive faster · V back to the rocket";
+  }
   if (f.flash && performance.now() < f.flash.until) return f.flash.text;
   if (f.eva) {
     return nearRocket()
@@ -2417,7 +3031,7 @@ function currentMessage() {
 
   if (f.state === "ready") {
     return f.stages.length
-      ? "Press SPACE to launch\nA / D steer · P / R point forward / backward · E science · M map · Esc pause"
+      ? "Press SPACE to launch\nA / D steer · P / R point forward / backward · T point at station · E science · M map · Esc pause"
       : "Your rocket has no engines!";
   }
 
@@ -2441,10 +3055,25 @@ function currentMessage() {
     if (canTakeOff()) next = "\nSPACE: take off again · N: new launch";
     else if (f.onSide && f.result !== "crashed" && f.result !== "burnedUp") next = "\n(It fell over, so it can't take off) · SPACE: new launch";
     if (canExit()) next += " · F: get out";
+    if (canDriveRover()) next += f.rover ? " · V: drive the rover" : " · V: drive the rover off";
     return results[f.result] + notes + next;
   }
 
   // Overheating warning
+  if (f.docked) return `🔗 Docked with ${STATION.name}\nSPACE: undock`;
+  const radar = landingRadar();
+  if (radar && radar.down > 1) {
+    const burningNow = f.engines.some((e) => e.burning);
+    const safe = hasLegs() ? LEGS_SAFE_SPEED : SAFE_LANDING_SPEED;
+    if (radar.height < 400 && radar.speed < 60) {
+      return radar.speed > safe * 0.8
+        ? `📡 ${Math.round(radar.height)} m · ⚠️ Slow down! (${radar.speed.toFixed(0)} m/s)`
+        : `📡 ${Math.round(radar.height)} m · Speed ${radar.speed.toFixed(0)} m/s: looking good`;
+    }
+    if (radar.burnIn !== null && radar.burnIn <= 0 && !burningNow) return "📡 🔥 BURN NOW! Hold R and press SPACE";
+    if (radar.burnIn !== null && radar.burnIn <= 0 && burningNow) return "📡 Keep burning (hold R)";
+    if (radar.burnIn !== null && radar.burnIn < 15) return `📡 Landing burn in ${Math.ceil(radar.burnIn)} s: hold R`;
+  }
   if (f.heat > 50 && f.heatRate > 0.5) {
     if (f.shieldFacing) return "🔥 Heat shield is taking the heat!";
     if (activeShield()) return "🔥 Overheating! Turn your heat shield toward the ground";
@@ -2484,6 +3113,17 @@ document.addEventListener("keydown", (event) => {
     if (event.code === "KeyM" && !event.repeat) toggleMap();
     return;
   }
+  if (event.code === "KeyV" && !event.repeat) toggleRover();
+  if (flight.driving) {
+    // Driving: A/D drive, E scans, M map (Space does nothing, so you can't take off by accident)
+    if (event.code === "KeyA") steering.left = true;
+    if (event.code === "KeyD") steering.right = true;
+    if (event.code === "Space") event.preventDefault();
+    if (event.code === "KeyE" && !event.repeat) roverScan();
+    if (event.code === "KeyM" && !event.repeat) toggleMap();
+    if (event.code === "KeyN" && !event.repeat) resetFlight();
+    return;
+  }
   if (event.code === "KeyF" && !event.repeat) toggleEva();
   if (event.code === "KeyN" && !event.repeat && flight.state === "ended") resetFlight();
   if (flight.eva) {
@@ -2502,6 +3142,7 @@ document.addEventListener("keydown", (event) => {
   if (event.code === "KeyD") steering.right = true;
   if (event.code === "KeyP") steering.prograde = true;
   if (event.code === "KeyR") steering.retrograde = true;
+  if (event.code === "KeyT") steering.target = true;
   if (event.code === "KeyE" && !event.repeat) runExperiments();
   if (event.code === "KeyM" && !event.repeat) toggleMap();
   if (event.code !== "Space") return;
@@ -2513,6 +3154,7 @@ document.addEventListener("keyup", (event) => {
   if (event.code === "KeyD") steering.right = false;
   if (event.code === "KeyP") steering.prograde = false;
   if (event.code === "KeyR") steering.retrograde = false;
+  if (event.code === "KeyT") steering.target = false;
   if (event.code === "Space" || event.code === "KeyW") steering.jump = false;
   if (event.code === "Space" && !launchPage.hidden) event.preventDefault();
 });
@@ -2522,6 +3164,7 @@ window.addEventListener("blur", () => {
   steering.right = false;
   steering.prograde = false;
   steering.retrograde = false;
+  steering.target = false;
 });
 
 // Back to the builder, with the rocket still there
